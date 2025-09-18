@@ -1,0 +1,22 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Logs & junk
+*.log
+npm-debug.log*
+yarn-*.log*
+pnpm-*.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
