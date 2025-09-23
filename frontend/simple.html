@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiveKit Voice Agent</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .status {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .info {
+            background-color: #e7f3ff;
+            color: #004085;
+            border: 1px solid #bee5eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LiveKit Voice Agent Application</h1>
+        
+        <div class="status success">
+            ✅ Backend Server: Running on port 8000
+        </div>
+        
+        <div class="status info">
+            📡 This is a LiveKit-based AI voice agent application for Telugu language support
+        </div>
+        
+        <div class="status info">
+            🔧 Setup Status:<br>
+            • Python Backend: ✅ Configured and Running<br>
+            • FastAPI Server: ✅ Ready<br>
+            • Next.js Frontend: 🔄 Ready for dependencies<br>
+            • LiveKit Integration: 🔄 Needs environment variables
+        </div>
+
+        <h2>API Endpoints</h2>
+        <p><strong>Backend API:</strong> <a href="http://localhost:8000/docs" target="_blank">http://localhost:8000/docs</a></p>
+        <p><strong>Get Token:</strong> <code>/get-token?room_name=test&identity=user</code></p>
+
+        <h2>Next Steps</h2>
+        <ol>
+            <li>Set up LiveKit environment variables (LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)</li>
+            <li>Complete frontend dependency installation</li>
+            <li>Configure Google API credentials for the AI agent</li>
+        </ol>
+    </div>
+</body>
+</html>
