@@ -44,4 +44,4 @@ async def get_token(room_name: str, identity: str):
             room=room_name,
         )).to_jwt()
 
-    return {"token": token}
+    return {"token": token, "livekit_url": livekit_url}

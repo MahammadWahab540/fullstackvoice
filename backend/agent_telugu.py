@@ -12,11 +12,13 @@ from livekit.agents import (
     ChatContext,
     ChatMessage,
 )
+# This is the corrected import for the Google plugin
 from livekit.plugins import google
 
+# Note: LlamaIndex imports are here for when you add the RAG logic back.
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
-from llama_index.llms.gemini import Gemini
-from llama_index.embeddings.gemini import GeminiEmbedding
+from llama_index.llms.google_genai import GoogleGenAI
+from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
 load_dotenv()
 
@@ -38,7 +40,8 @@ class NxtWaveOnboardingAgent(agents.Agent):
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage):
         print(f"User said: {new_message.text_content()}")
-        pass
+        # This makes the agent reply after the user speaks
+        await turn_ctx.session.generate_reply()
 
     async def on_data_received(self, data: bytes, participant_identity: str):
         try:
@@ -60,6 +63,7 @@ class NxtWaveOnboardingAgent(agents.Agent):
         elif self.current_stage == "kyc":
             stage_instructions = "You are in the KYC stage. Proactively explain the documents needed for the loan process."
 
+        # Use self.session here because this method is part of the class, not a direct callback
         await self.session.generate_reply(
             instructions=f"The conversation has moved to the {self.current_stage} stage. Proactively begin this part of the conversation in Telugu, following these instructions: {stage_instructions}"
         )
@@ -80,11 +84,21 @@ async def entrypoint(ctx: JobContext):
     )
 
     agent_instance = NxtWaveOnboardingAgent(query_engine=QUERY_ENGINE, llm_instructions=llm_instructions)
+
+    # This line registers your function so it can receive messages from the frontend
     agent_instance.on_data_received = agent_instance.on_data_received
 
     await session.start(room=ctx.room, agent=agent_instance)
     await ctx.connect()
     print(f"{AGENT_SPOKEN_NAME} connected. Waiting for user interaction.")
+
+    # This makes the agent greet the user proactively
+    initial_greeting_prompt = (
+        f"The call has just connected. As '{AGENT_SPOKEN_NAME}', begin the conversation immediately in Telugu. "
+        f"Greet the parent warmly, introduce yourself, and state the call's purpose. "
+        f"Then, pause and wait for the human to respond."
+    )
+    await session.generate_reply(instructions=initial_greeting_prompt)
 
 if __name__ == "__main__":
     initialize_rag_pipeline_globally()
