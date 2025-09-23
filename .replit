@@ -49,3 +49,8 @@ outputType = "webview"
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "-c", "cd backend && uvicorn server:app --host 0.0.0.0 --port 5000 & cd ../frontend && npm run start -- --port 3000 --hostname 0.0.0.0 & wait"]
+build = ["bash", "-c", "cd frontend && npm install && npm run build"]
