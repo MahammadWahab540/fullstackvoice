@@ -16,9 +16,12 @@ livekit_api_secret = os.getenv('LIVEKIT_API_SECRET')
 app = FastAPI()
 
 # --- CORS Middleware Configuration ---
-# This is the section that fixes the connection error
+# Configured for Replit environment
 origins = [
-    "http://localhost:3000",  # The address of your frontend
+    "http://localhost:3000",  # Local development
+    "http://localhost:5000",  # Replit frontend port
+    "https://ad14fee7-e6bd-4157-a28d-1b72b6619c74-00-nufa4jcmu1c6.pike.replit.dev",  # Replit domain
+    "*"  # Allow all for development
 ]
 
 app.add_middleware(
