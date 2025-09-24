@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NxtWave Voice Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/livekit-client@2.15.7/dist/livekit-client.umd.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin { animation: spin 6s linear infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+        .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes ping {
+            75%, 100% { transform: scale(2); opacity: 0; }
+        }
+        .animate-ping { animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel" data-presets="react">
+        const { useState, useEffect, useCallback, useRef, useMemo } = React;
+        const { render } = ReactDOM;
+        const { Room, ConnectionState, RoomEvent, Track, ParticipantEvent } = LiveKit;
+
+        const backendUrl = 'http://localhost:8000';
+        const roomName = 'test-call';
+        const defaultLivekitUrl = 'wss://voiceagent-495b9yge.livekit.cloud';
+
+        const STAGE_FLOW = [
+            {
+                key: 'greeting',
+                title: 'Greeting',
+                guidance: 'Harshitha will welcome you and confirm your learner details.',
+                microcopy: 'Most families complete this welcome in under 2 minutes.',
+                ctaLabel: 'Begin Payment Process',
+                accent: 'from-sky-300 to-indigo-400',
+            },
+            {
+                key: 'payment_process',
+                title: 'Payment Process',
+                guidance: 'We outline fees, scholarships, and timelines before you decide.',
+                microcopy: 'We never charge until you confirm the plan that fits best.',
+                ctaLabel: 'Select Payment Option',
+                accent: 'from-indigo-300 to-violet-400',
+            },
+            {
+                key: 'payment_options',
+                title: 'Payment Options',
+                guidance: 'Choose NBFC EMI, Credit Card EMI, or one-time full payment.',
+                microcopy: 'You can revisit your choice with the agent at any time.',
+                ctaLabel: 'Confirm Payment Option',
+                accent: 'from-emerald-300 to-sky-400',
+            },
+            {
+                key: 'rca_kyc',
+                title: 'RCA & KYC Checklist',
+                guidance: 'Upload or verify documents so we can wrap compliance quickly.',
+                microcopy: 'Most families finish documents in under 10 minutes.',
+                ctaLabel: 'Upload PAN',
+                accent: 'from-amber-300 to-rose-300',
+            },
+        ];
+
+        const avatarShellMap = {
+            idle: 'bg-sky-300 shadow-[0_0_32px_-12px_rgba(56,189,248,0.9)] animate-pulse',
+            thinking: 'bg-indigo-300 shadow-[0_0_35px_-12px_rgba(79,70,229,0.9)] animate-pulse',
+            speaking: 'bg-emerald-300 shadow-[0_0_40px_-10px_rgba(16,185,129,0.9)] scale-110',
+            error: 'bg-rose-400 shadow-[0_0_35px_-8px_rgba(244,63,94,0.9)]',
+        };
+
+        const avatarStateLabelMap = {
+            idle: 'Listening',
+            thinking: 'Thinking',
+            speaking: 'Speaking',
+            error: 'Needs attention',
+        };
+
+        const AgentAvatar = ({ state, agentName }) => {
+            const shellClass = avatarShellMap[state];
+            return (
+                <div className="relative flex h-52 w-52 items-center justify-center">
+                    <div className="absolute inset-0 rounded-full bg-gradient-to-br from-sky-200 via-white to-slate-200 shadow-2xl" />
+                    <div className={`relative flex h-36 w-36 items-center justify-center rounded-full transition-all duration-500 ${shellClass}`}>
+                        <span className="text-lg font-semibold text-slate-800">{agentName}</span>
+                        {state === 'thinking' && (
+                            <span className="absolute h-44 w-44 rounded-full border-4 border-indigo-200/70 border-t-transparent animate-spin" />
+                        )}
+                        {state === 'speaking' && <span className="absolute inset-0 rounded-full bg-emerald-200/30 animate-ping" />}
+                        {state === 'error' && <span className="absolute inset-0 rounded-full bg-rose-200/70" />}
+                    </div>
+                </div>
+            );
+        };
+
+        const LoginPage = ({ onStartCall }) => {
+            const [fullName, setFullName] = useState('');
+            const [phoneNumber, setPhoneNumber] = useState('');
+            const isDisabled = fullName.trim().length === 0 || phoneNumber.trim().length === 0;
+
+            const handleSubmit = (event) => {
+                event.preventDefault();
+                if (isDisabled) return;
+                onStartCall({ name: fullName.trim(), phone: phoneNumber.trim() });
+            };
+
+            return (
+                <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-sky-50 via-white to-slate-100 px-6 py-16">
+                    <form onSubmit={handleSubmit} className="w-full max-w-md space-y-6 rounded-3xl bg-white/80 p-8 shadow-2xl backdrop-blur">
+                        <div>
+                            <h1 className="text-3xl font-bold tracking-tight text-slate-800">NxtWave Voice Agent</h1>
+                            <p className="mt-2 text-sm text-slate-500">Enter your details to begin the onboarding call.</p>
+                        </div>
+                        <label className="block space-y-1">
+                            <span className="text-sm font-medium text-slate-600">Full Name</span>
+                            <input
+                                type="text"
+                                value={fullName}
+                                onChange={(e) => setFullName(e.target.value)}
+                                placeholder="Jane Doe"
+                                className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200"
+                                required
+                            />
+                        </label>
+                        <label className="block space-y-1">
+                            <span className="text-sm font-medium text-slate-600">Phone Number</span>
+                            <input
+                                type="tel"
+                                value={phoneNumber}
+                                onChange={(e) => setPhoneNumber(e.target.value)}
+                                placeholder="98765 43210"
+                                className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-slate-800 shadow-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-200"
+                                required
+                            />
+                        </label>
+                        <button
+                            type="submit"
+                            disabled={isDisabled}
+                            className="flex w-full items-center justify-center rounded-xl bg-sky-500 px-6 py-3 text-lg font-semibold text-white shadow-lg transition hover:bg-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-200 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+                        >
+                            Start Call
+                        </button>
+                    </form>
+                </div>
+            );
+        };
+
+        const CallPage = ({ user, onReset }) => {
+            const [room, setRoom] = useState(null);
+            const [isConnecting, setIsConnecting] = useState(true);
+            const [connectionState, setConnectionState] = useState(ConnectionState.Disconnected);
+            const [connectionError, setConnectionError] = useState(null);
+            const [avatarState, setAvatarState] = useState('idle');
+            const [currentStageIndex, setCurrentStageIndex] = useState(0);
+
+            const currentStage = STAGE_FLOW[currentStageIndex];
+            const agentDisplayName = 'Harshitha';
+
+            const connectToLiveKit = useCallback(async () => {
+                try {
+                    setIsConnecting(true);
+                    setConnectionError(null);
+                    setAvatarState('thinking');
+
+                    const tokenUrl = new URL('/get-token', backendUrl);
+                    tokenUrl.searchParams.set('room_name', roomName);
+                    tokenUrl.searchParams.set('identity', user.name);
+
+                    const response = await fetch(tokenUrl.toString());
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch token: ${response.status} ${response.statusText}`);
+                    }
+
+                    const data = await response.json();
+                    if (!data.token) {
+                        throw new Error('Backend response did not include a LiveKit token');
+                    }
+
+                    const livekitUrl = data.livekit_url ?? defaultLivekitUrl;
+                    const newRoom = new Room({ adaptiveStream: true, dynacast: true });
+
+                    await newRoom.connect(livekitUrl, data.token);
+                    await newRoom.localParticipant.setMicrophoneEnabled(true);
+
+                    setRoom(newRoom);
+                    setConnectionState(newRoom.state);
+                    setAvatarState('idle');
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : 'Unknown error occurred while connecting';
+                    setConnectionError(message);
+                    setAvatarState('error');
+                } finally {
+                    setIsConnecting(false);
+                }
+            }, [user.name]);
+
+            useEffect(() => {
+                connectToLiveKit();
+            }, [connectToLiveKit]);
+
+            return (
+                <div className="flex min-h-screen bg-gradient-to-br from-sky-50 via-white to-slate-100 p-6">
+                    <div className="mx-auto w-full max-w-6xl space-y-8">
+                        {/* Header */}
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h1 className="text-2xl font-bold text-slate-800">NxtWave Voice Agent</h1>
+                                <p className="text-sm text-slate-500">Connected as {user.name}</p>
+                            </div>
+                            <button
+                                onClick={onReset}
+                                className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-300"
+                            >
+                                End Call
+                            </button>
+                        </div>
+
+                        {/* Main content */}
+                        <div className="grid gap-8 lg:grid-cols-2">
+                            {/* Left: Agent Avatar */}
+                            <div className="flex flex-col items-center space-y-6">
+                                <AgentAvatar state={avatarState} agentName={agentDisplayName} />
+                                <div className="text-center">
+                                    <p className="text-lg font-semibold text-slate-800">{agentDisplayName}</p>
+                                    <p className="text-sm text-slate-500">{avatarStateLabelMap[avatarState]}</p>
+                                    <p className="mt-2 text-xs text-slate-400">
+                                        Status: {connectionState}
+                                        {connectionError && (
+                                            <span className="block text-rose-500">Error: {connectionError}</span>
+                                        )}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Right: Stage Progress */}
+                            <div className="space-y-6">
+                                <div className="rounded-3xl bg-white/80 p-6 shadow-lg backdrop-blur">
+                                    <div className={`inline-block rounded-full bg-gradient-to-r ${currentStage.accent} px-3 py-1 text-xs font-semibold text-white`}>
+                                        Stage {currentStageIndex + 1} of {STAGE_FLOW.length}
+                                    </div>
+                                    <h2 className="mt-3 text-xl font-bold text-slate-800">{currentStage.title}</h2>
+                                    <p className="mt-2 text-slate-600">{currentStage.guidance}</p>
+                                    <p className="mt-3 text-sm text-slate-500">{currentStage.microcopy}</p>
+                                    
+                                    <div className="mt-6">
+                                        <button 
+                                            className="rounded-xl bg-sky-500 px-6 py-3 font-semibold text-white hover:bg-sky-400"
+                                            onClick={() => setCurrentStageIndex(Math.min(currentStageIndex + 1, STAGE_FLOW.length - 1))}
+                                        >
+                                            {currentStage.ctaLabel}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Connection Status */}
+                                <div className="rounded-3xl bg-white/80 p-4 shadow-lg backdrop-blur">
+                                    <h3 className="font-semibold text-slate-800">Connection Status</h3>
+                                    <div className="mt-2 space-y-1 text-sm">
+                                        <div className="flex justify-between">
+                                            <span>LiveKit:</span>
+                                            <span className={connectionState === 'connected' ? 'text-emerald-600' : 'text-amber-600'}>
+                                                {connectionState}
+                                            </span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Agent:</span>
+                                            <span className="text-emerald-600">Ready</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Backend:</span>
+                                            <span className="text-emerald-600">Connected</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+
+            if (!user) {
+                return <LoginPage onStartCall={setUser} />;
+            }
+
+            return <CallPage user={user} onReset={() => setUser(null)} />;
+        };
+
+        render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
