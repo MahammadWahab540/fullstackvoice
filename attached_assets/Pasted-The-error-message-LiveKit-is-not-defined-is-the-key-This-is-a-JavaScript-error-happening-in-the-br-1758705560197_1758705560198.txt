@@ -1,0 +1,67 @@
+The error message LiveKit is not defined is the key.
+
+This is a JavaScript error happening in the browser (the "Preview" window). It means your application's code is trying to use the livekit-client library to connect to the voice call, but the library was never loaded.
+
+This happens when the frontend dependencies are not installed correctly. Your code is like a recipe calling for a special ingredient (LiveKit), but that ingredient is missing from the kitchen (node_modules).
+
+The Prompt to Fix This in Replit
+The solution is to perform a clean installation of your frontend packages and then restart all your servers. This ensures all the necessary libraries are downloaded and loaded correctly.
+
+Here are the exact prompts to run in your Replit Shell.
+
+Step 1: Stop All Running Servers
+First, ensure a completely clean state.
+
+Click the red "Stop" button at the top of your Replit workspace.
+
+Go into any open Shell tabs and press Ctrl + C to stop any leftover processes.
+
+Step 2: The Clean Install Prompt (The Main Fix)
+This is the most important command sequence. Run this in a single shell tab.
+
+Bash
+
+# Navigate to your frontend directory
+cd frontend
+
+# This command removes the old, possibly incomplete, dependency folder
+rm -rf node_modules
+
+# This command installs all the required libraries fresh from your package.json file
+npm install
+This will fix the missing LiveKit library issue.
+
+Step 3: The Run Server Prompts (In 3 Separate Shells)
+Now that the dependencies are fixed, you must start your three servers again in three separate Shell tabs.
+
+➡️ In Shell 1, prompt:
+
+Bash
+
+cd backend
+uvicorn server:app --host 0.0.0.0 --port 8000
+(Leave this running)
+
+➡️ In Shell 2, prompt:
+
+Bash
+
+cd backend
+python agent_telugu.py dev
+(Leave this running)
+
+➡️ In Shell 3, prompt:
+
+Bash
+
+cd frontend
+npm run dev
+Expected Outcome
+After running npm run dev in the third shell, the "Preview" window will refresh. The LiveKit is not defined error will be gone, and you will see your "NxtWave Voice Agent" login page, fully working and ready for you to test.
+
+
+
+
+
+
+
