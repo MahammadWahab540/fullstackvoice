@@ -20,11 +20,11 @@ args = "Shell 2 - AI Agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Shell 3 - Frontend"
+args = "Shell 1 - Token Server"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Shell 1 - Token Server"
+args = "Shell 3 - Frontend"
 
 [[workflows.workflow]]
 name = "Shell 2 - AI Agent"
@@ -33,6 +33,18 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "cd backend && python agent_telugu.py dev"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Shell 1 - Token Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload"
+waitForPort = 8000
 
 [workflows.workflow.metadata]
 outputType = "console"
@@ -49,29 +61,13 @@ waitForPort = 5000
 [workflows.workflow.metadata]
 outputType = "webview"
 
-[[workflows.workflow]]
-name = "Shell 1 - Token Server"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload"
-waitForPort = 8000
-
-[workflows.workflow.metadata]
-outputType = "console"
+[[ports]]
+localPort = 3000
+externalPort = 3000
 
 [[ports]]
 localPort = 5000
 externalPort = 80
-
-[[ports]]
-localPort = 8000
-externalPort = 8000
-
-[[ports]]
-localPort = 37759
-externalPort = 3000
 
 [deployment]
 deploymentTarget = "vm"
