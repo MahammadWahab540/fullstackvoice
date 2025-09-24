@@ -34,6 +34,14 @@ app.add_middleware(
 # --- End of CORS Configuration ---
 
 
+@app.get("/")
+async def root():
+    """
+    Root endpoint - redirect to frontend
+    """
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="http://localhost:5000")
+
 @app.get("/get-token")
 async def get_token(room_name: str, identity: str):
     """
