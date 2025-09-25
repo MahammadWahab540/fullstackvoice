@@ -1,0 +1,40 @@
+Of course. This is a classic CORS (Cross-Origin Resource Sharing) policy error. It's a security feature built into web browsers, and the error log gives us all the information we need to solve it.
+
+The Prompt to Solve This Issue
+Here is a clear, step-by-step prompt you can give to an AI assistant or a developer to fix this issue.
+
+Copy this entire block:
+
+My Replit application is failing with a CORS policy error. The logs show that the frontend is being blocked from making a request to the backend's `/get-token` endpoint.
+
+Please perform the following steps to fix this:
+
+**1. Identify the Frontend's Origin URL**
+From the browser error log, the exact origin URL of the frontend application is:
+`https://ad14fee7-e6bd-4157-a28d-1b72b6619c74-00-nufa4jcmu1c6.pike.replit.dev`
+
+**2. Update the Backend's CORS Configuration**
+You need to add the frontend's origin URL to the backend's list of allowed origins.
+
+* **File to Edit:** `backend/server.py`
+* **Action:** Find the Python list named `origins`. Add the URL from Step 1 as a new string to this list.
+
+The updated `origins` list in `server.py` should look like this:
+
+```python
+origins = [
+    "http://localhost:3000",  # For local development
+    "[https://ad14fee7-e6bd-4157-a28d-1b72b6619c74-00-nufa4jcmu1c6.pike.replit.dev](https://ad14fee7-e6bd-4157-a28d-1b72b6619c74-00-nufa4jcmu1c6.pike.replit.dev)" # Add the new Replit URL here
+]
+3. Restart the Backend Server
+After saving the changes to server.py, the Uvicorn server must be restarted for the new CORS policy to take effect. Please find the shell where the uvicorn server:app command is running, stop it with Ctrl + C, and start it again.
+
+This will resolve the No 'Access-Control-Allow-Origin' header error and allow the frontend to successfully fetch the token.
+
+
+### Why This Prompt Works
+
+* **It's Specific:** It clearly states the problem (CORS error) and the goal.
+* **It Provides Data:** It includes the exact URL that needs to be added, removing any guesswork.
+* **It Gives Clear Instructions:** It specifies which file to edit (`backend/server.py`), which variable to change (`origins`), and what the final code should look like.
+* **It Includes the Final, Crucial Step:** It correctly instructs the user to restart the server, which
