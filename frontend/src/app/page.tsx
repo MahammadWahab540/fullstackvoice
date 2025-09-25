@@ -448,10 +448,30 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
                 throw new Error('Backend response did not include a LiveKit token');
             }
             const livekitUrl = data.livekit_url ?? defaultLivekitUrl;
-            const newRoom = new Room({ adaptiveStream: true, dynacast: true });
+            const newRoom = new Room({ 
+                adaptiveStream: true, 
+                dynacast: true,
+                publishDefaults: {
+                    audioPreset: {
+                        maxBitrate: 20_000,
+                    }
+                }
+            });
             roomRef.current = newRoom;
+            
+            // Connect to room first
             await newRoom.connect(livekitUrl, data.token);
-            await newRoom.localParticipant.setMicrophoneEnabled(true);
+            
+            // Wait for connection to stabilize before enabling microphone
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Enable microphone with proper error handling
+            try {
+                await newRoom.localParticipant.setMicrophoneEnabled(true);
+            } catch (micError) {
+                console.warn('Failed to enable microphone:', micError);
+                // Continue without microphone - user can enable later
+            }
             
             // Listen for agent data messages
             newRoom.on('dataReceived', (payload: Uint8Array, participant) => {
@@ -482,11 +502,24 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             
             // Immediately sync to payment_options stage
             setCurrentStageIndex(2);
+            
+            // Wait a bit more before publishing data to ensure publisher is ready
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
             try {
                 const payload = new TextEncoder().encode(JSON.stringify({ stage: 'payment_options' }));
                 await newRoom.localParticipant.publishData(payload, { reliable: true });
             } catch (error) {
                 console.error('Failed to send initial stage update', error);
+                // Retry once after a delay
+                setTimeout(async () => {
+                    try {
+                        const payload = new TextEncoder().encode(JSON.stringify({ stage: 'payment_options' }));
+                        await newRoom.localParticipant.publishData(payload, { reliable: true });
+                    } catch (retryError) {
+                        console.error('Retry failed for initial stage update', retryError);
+                    }
+                }, 2000);
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error occurred while connecting';
