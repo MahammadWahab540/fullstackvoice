@@ -20,7 +20,8 @@ app = FastAPI()
 origins = [
     "http://localhost:3000",  # Local development
     "http://localhost:5000",  # Replit frontend port
-    "https://ad14fee7-e6bd-4157-a28d-1b72b6619c74-00-nufa4jcmu1c6.pike.replit.dev",  # Replit domain
+    "https://ad14fee7-e6bd-4157-a28d-1b72b6619c74-00-nufa4jcmu1c6.pike.replit.dev",  # Replit frontend domain
+    "https://8000-ad14fee7-e6bd-4157-a28d-1b72b6619c74-00-nufa4jcmu1c6.pike.replit.dev",  # Replit backend domain
     "*"  # Allow all for development
 ]
 
