@@ -63,13 +63,29 @@ class NxtWaveOnboardingAgent(agents.Agent):
     def __init__(self, query_engine, llm_instructions):
         super().__init__(instructions=llm_instructions)
         self.query_engine = query_engine
-        self.current_stage = "introduction"
+        self.current_stage = "payment_options"
+        self.user_payment_choice = None
         # Store the agent's session to generate replies from any method
         self.agent_session: AgentSession | None = None
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage):
-        user_query = new_message.text_content()
+        user_query = new_message.text_content().lower()
         print(f"User said: {user_query}")
+
+        # Payment option validation logic
+        if self.current_stage == "payment_options":
+            if any(keyword in user_query for keyword in ["credit card", "credit", "card"]):
+                self.user_payment_choice = "credit_card"
+                await self._handle_payment_selection(turn_ctx)
+                return
+            elif any(keyword in user_query for keyword in ["full payment", "full", "upfront", "one time"]):
+                self.user_payment_choice = "full_payment"
+                await self._handle_payment_selection(turn_ctx)
+                return
+            elif any(keyword in user_query for keyword in ["emi", "loan", "nbfc", "installment", "monthly"]):
+                self.user_payment_choice = "nbfc_emi"
+                await self._handle_payment_selection(turn_ctx)
+                return
 
         # --- RAG Integration Logic ---
         # If the RAG engine is ready and the user asks a question, use it.
@@ -81,22 +97,53 @@ class NxtWaveOnboardingAgent(agents.Agent):
                 print(f"RAG Response: {rag_context}")
 
                 rag_prompt = (
-                    f"A user asked: '{user_query}'.\n"
-                    f"You have the following information from your knowledge base to help answer:\n\n"
-                    f"--- Context ---\n{rag_context}\n-----------------\n\n"
-                    f"Based on this context, provide a helpful and concise answer in Telugu. "
-                    f"Frame the answer positively. Do not mention your knowledge base. "
-                    f"If the context doesn't seem to answer the question, say you will find out and get back to them."
+                    f"User asked: '{user_query}'. Context: {rag_context}. "
+                    f"Answer briefly in Telugu. Don't mention knowledge base."
                 )
                 await turn_ctx.session.generate_reply(instructions=rag_prompt)
                 return
 
             except Exception as e:
                 print(f"Error querying RAG pipeline: {e}")
-                # Fallback to default behavior if RAG fails
 
-        # Default reply generation if not a RAG query
+        # Default reply generation
         await turn_ctx.session.generate_reply()
+
+    async def _handle_payment_selection(self, turn_ctx: ChatContext):
+        """Handle payment option selection with validation logic"""
+        if self.user_payment_choice in ["credit_card", "full_payment"]:
+            # End flow with PRExpert message
+            response = "Our PRExpert will be contacting you shortly."
+            await turn_ctx.session.generate_reply(instructions=f"Say: '{response}' in Telugu.")
+            self.current_stage = "ended"
+            
+            # Notify frontend conversation has ended
+            if hasattr(self.agent_session, 'room') and self.agent_session.room:
+                try:
+                    import json
+                    payload = json.dumps({"status": "ended", "message": "conversation_completed"})
+                    await self.agent_session.room.local_participant.publish_data(
+                        payload.encode(), reliable=True
+                    )
+                except Exception as e:
+                    print(f"Failed to send ended status: {e}")
+                    
+        elif self.user_payment_choice == "nbfc_emi":
+            # Continue flow
+            response = "We are processing your request. Moving to the next stage."
+            await turn_ctx.session.generate_reply(instructions=f"Say: '{response}' in Telugu.")
+            self.current_stage = "next_stage"
+            
+            # Notify frontend to advance to next stage  
+            if hasattr(self.agent_session, 'room') and self.agent_session.room:
+                try:
+                    import json
+                    payload = json.dumps({"stage": "rca_kyc", "advance_stage": True})
+                    await self.agent_session.room.local_participant.publish_data(
+                        payload.encode(), reliable=True
+                    )
+                except Exception as e:
+                    print(f"Failed to send stage advance: {e}")
 
     async def on_data_received(self, data: bytes, participant_identity: str):
         try:
@@ -106,52 +153,91 @@ class NxtWaveOnboardingAgent(agents.Agent):
                 print(f"Received new stage from frontend: {new_stage}")
                 self.current_stage = new_stage
                 await self.update_agent_for_stage()
+            elif 'payment_choice' in payload:
+                choice = payload['payment_choice']
+                choice_title = payload.get('choice_title', choice)
+                print(f"Received payment choice from frontend: {choice} ({choice_title})")
+                
+                # Map frontend keys to backend logic
+                if choice in ['credit-card', 'credit-card-emi']:
+                    self.user_payment_choice = "credit_card"
+                elif choice == 'full-payment':
+                    self.user_payment_choice = "full_payment"
+                elif choice in ['nbfc-emi', '0%-interest-loan-with-nbfc-(emi)']:
+                    self.user_payment_choice = "nbfc_emi"
+                
+                if self.agent_session:
+                    await self._handle_payment_selection_direct()
         except Exception as e:
             print(f"Error handling data message: {e}")
 
+    async def _handle_payment_selection_direct(self):
+        """Handle payment option selection sent directly from frontend"""
+        if self.user_payment_choice in ["credit_card", "full_payment"]:
+            # End flow with PRExpert message
+            response = "Our PRExpert will be contacting you shortly."
+            await self.agent_session.generate_reply(instructions=f"Say: '{response}' in Telugu.")
+            self.current_stage = "ended"
+            
+            # Notify frontend conversation has ended
+            if hasattr(self.agent_session, 'room') and self.agent_session.room:
+                try:
+                    import json
+                    payload = json.dumps({"status": "ended", "message": "conversation_completed"})
+                    await self.agent_session.room.local_participant.publish_data(
+                        payload.encode(), reliable=True
+                    )
+                except Exception as e:
+                    print(f"Failed to send ended status: {e}")
+                    
+        elif self.user_payment_choice == "nbfc_emi":
+            # Continue flow
+            response = "We are processing your request. Moving to the next stage."
+            await self.agent_session.generate_reply(instructions=f"Say: '{response}' in Telugu.")
+            self.current_stage = "next_stage"
+            
+            # Notify frontend to advance to next stage  
+            if hasattr(self.agent_session, 'room') and self.agent_session.room:
+                try:
+                    import json
+                    payload = json.dumps({"stage": "rca_kyc", "advance_stage": True})
+                    await self.agent_session.room.local_participant.publish_data(
+                        payload.encode(), reliable=True
+                    )
+                except Exception as e:
+                    print(f"Failed to send stage advance: {e}")
+
     async def update_agent_for_stage(self):
         stage_instructions = ""
-        if self.current_stage == "introduction":
+        if self.current_stage == "payment_options":
             stage_instructions = (
-                f"You are in the introduction stage. Greet the user warmly, introduce yourself as {AGENT_SPOKEN_NAME} "
-                f"from {CALLING_FROM_COMPANY}, and confirm you are speaking with the parent. Build a friendly rapport."
+                "Present 3 payment options: 1. Credit Card, 2. Full Payment, 3. 0% Interest Loan with NBFC (EMI). "
+                "Ask user to choose one. Be brief and direct."
             )
-        elif self.current_stage == "payment":
-            # This is now enhanced with context from your PDF
+        elif self.current_stage == "next_stage":
             stage_instructions = (
-                "You are now in the payment stage. Proactively explain how NxtWave makes education affordable for everyone. "
-                "Mention that financial partners (NBFCs) ensure that upfront costs are not a barrier, allowing education to be an investment in their child's future. "
-                "Explain the benefits of No-Cost EMI options. Be ready to answer questions about this."
+                "Continue with the next steps of the onboarding process. Guide them through the EMI setup."
             )
-        elif self.current_stage == "kyc":
-            # This is also enhanced with context from your PDF
-            stage_instructions = (
-                "You are in the KYC stage. Explain that this process is simple, digital, and secure because we partner with trusted, "
-                "RBI-registered financial institutions. Reassure them that this adds credibility and makes the financial process safe. "
-                "Proactively explain the documents needed for the loan process."
-            )
+        elif self.current_stage == "ended":
+            return  # Conversation has ended
 
-        if self.agent_session:
+        if self.agent_session and stage_instructions:
              await self.agent_session.generate_reply(
-                instructions=f"The conversation has moved to the '{self.current_stage}' stage. "
-                             f"Proactively begin this part of the conversation in Telugu, following these instructions: {stage_instructions}"
+                instructions=f"Move to '{self.current_stage}' stage. In Telugu: {stage_instructions}"
             )
 
 async def entrypoint(ctx: JobContext):
     # Instructions are updated to make the agent aware of its RAG capabilities
     llm_instructions = (
-        f"You are '{AGENT_SPOKEN_NAME}', a friendly and professional '{AGENT_ROLE}' from {CALLING_FROM_COMPANY}. "
-        f"Your primary language for this conversation is Telugu. "
-        f"Your goal is to guide parents through the NxtWave onboarding process smoothly. "
-        f"You will receive stage updates to direct the conversation. Follow them precisely. "
-        f"If the user asks a specific question, you have access to a knowledge base to provide accurate answers."
+        f"You are {AGENT_SPOKEN_NAME} from {CALLING_FROM_COMPANY}. Telugu voice agent. "
+        f"Be brief, direct. Present payment options immediately. Handle user choice with validation logic."
     )
 
     session = agents.AgentSession(
         llm=google.beta.realtime.RealtimeModel(
             model="gemini-2.5-flash-exp-native-audio-thinking-dialog",
             voice="Aoede",
-            temperature=0.8,
+            temperature=0.3,
             instructions=llm_instructions,
         ),
     )
@@ -167,11 +253,10 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect()
     print(f"{AGENT_SPOKEN_NAME} connected. Waiting for user interaction.")
 
-    # Proactive greeting
+    # Proactive greeting with immediate payment options
     initial_greeting_prompt = (
-        f"The call has just connected. As '{AGENT_SPOKEN_NAME}', begin the conversation immediately in Telugu. "
-        f"Greet the parent warmly, introduce yourself and {CALLING_FROM_COMPANY}, and state the call's purpose. "
-        f"Then, pause and wait for the human to respond."
+        f"Start immediately in Telugu. Say: 'Welcome back! Let's continue with your setup.' "
+        f"Then present payment options: Credit Card, Full Payment, or 0% Interest Loan with NBFC (EMI). Ask them to choose."
     )
     await session.generate_reply(instructions=initial_greeting_prompt)
 

@@ -112,14 +112,8 @@ const STAGE_FLOW: StageConfig[] = [
 
 const PAYMENT_OPTIONS: PaymentOption[] = [
     {
-        key: 'nbfc-emi',
-        title: 'NBFC EMI',
-        subtitle: 'Most flexible monthly plans',
-        description: 'Instant, paperless approval with auto-debit mandate to keep cash flow light.',
-    },
-    {
-        key: 'credit-card-emi',
-        title: 'Credit Card EMI',
+        key: 'credit-card',
+        title: 'Credit Card',
         subtitle: 'Use your existing credit limit',
         description: 'Swipe once, convert to EMIs with minimal bank charges and instant confirmation.',
     },
@@ -128,6 +122,12 @@ const PAYMENT_OPTIONS: PaymentOption[] = [
         title: 'Full Payment',
         subtitle: 'One-time secure transfer',
         description: 'Pay upfront via UPI or net banking with automatic receipt generation.',
+    },
+    {
+        key: 'nbfc-emi',
+        title: '0% Interest Loan with NBFC (EMI)',
+        subtitle: 'Most flexible monthly plans',
+        description: 'Instant, paperless approval with auto-debit mandate to keep cash flow light.',
     },
 ];
 
@@ -381,7 +381,7 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
     const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Disconnected);
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [avatarState, setAvatarState] = useState<AvatarState>('idle');
-    const [currentStageIndex, setCurrentStageIndex] = useState(0);
+    const [currentStageIndex, setCurrentStageIndex] = useState(2); // Start at payment_options
     const [selectedPaymentRoute, setSelectedPaymentRoute] = useState<PaymentOption['key']>('nbfc-emi');
     const [documentState, setDocumentState] = useState<Record<string, boolean>>(() =>
         Object.fromEntries(DOCUMENT_CHECKLIST.map((doc) => [doc.key, false])),
@@ -452,10 +452,42 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             roomRef.current = newRoom;
             await newRoom.connect(livekitUrl, data.token);
             await newRoom.localParticipant.setMicrophoneEnabled(true);
+            
+            // Listen for agent data messages
+            newRoom.on('dataReceived', (payload: Uint8Array, participant) => {
+                try {
+                    const data = JSON.parse(new TextDecoder().decode(payload));
+                    if (data.status === 'ended') {
+                        // Conversation ended, disconnect
+                        setTimeout(() => {
+                            newRoom.disconnect();
+                            onReset();
+                        }, 3000); // Wait 3 seconds for final message
+                    } else if (data.advance_stage && data.stage) {
+                        // Advance to next stage
+                        const stageIndex = STAGE_FLOW.findIndex(s => s.key === data.stage);
+                        if (stageIndex !== -1) {
+                            setCurrentStageIndex(stageIndex);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Failed to parse agent data:', error);
+                }
+            });
+            
             setRoom(newRoom);
             setIsMuted(false);
             setConnectionState(newRoom.state);
             updateAvatarState('idle');
+            
+            // Immediately sync to payment_options stage
+            setCurrentStageIndex(2);
+            try {
+                const payload = new TextEncoder().encode(JSON.stringify({ stage: 'payment_options' }));
+                await newRoom.localParticipant.publishData(payload, { reliable: true });
+            } catch (error) {
+                console.error('Failed to send initial stage update', error);
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error occurred while connecting';
             setConnectionError(message);
@@ -685,7 +717,21 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
                                     <button
                                         key={option.key}
                                         type="button"
-                                        onClick={() => setSelectedPaymentRoute(option.key)}
+                                        onClick={() => {
+                                            setSelectedPaymentRoute(option.key);
+                                            // Send payment choice to agent immediately
+                                            if (room) {
+                                                try {
+                                                    const payload = new TextEncoder().encode(JSON.stringify({ 
+                                                        payment_choice: option.key,
+                                                        choice_title: option.title 
+                                                    }));
+                                                    room.localParticipant.publishData(payload, { reliable: true });
+                                                } catch (error) {
+                                                    console.error('Failed to send payment choice', error);
+                                                }
+                                            }
+                                        }}
                                         className={`group flex flex-col gap-2 rounded-2xl border px-4 py-4 text-left transition ${
                                             isSelected
                                                 ? 'border-sky-400 bg-sky-50 shadow-lg'
