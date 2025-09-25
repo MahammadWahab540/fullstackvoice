@@ -58,9 +58,6 @@ task = "shell.exec"
 args = "cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload"
 waitForPort = 8000
 
-[workflows.workflow.metadata]
-outputType = "console"
-
 [[ports]]
 localPort = 3000
 externalPort = 3000
@@ -92,6 +89,10 @@ externalPort = 8080
 [[ports]]
 localPort = 35845
 externalPort = 3001
+
+[[ports]]
+localPort = 36929
+externalPort = 8099
 
 [[ports]]
 localPort = 37057
