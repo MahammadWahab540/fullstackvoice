@@ -1,18 +1,18 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChatTranscript } from '@/components/ui/ChatTranscript';
 import {
     ConnectionState,
+    DataPacket_Kind,
+    DefaultReconnectPolicy,
     LocalParticipant,
-    ParticipantEvent,
     Participant,
     RemoteParticipant,
     Room,
     RoomEvent,
     Track,
     TrackPublication,
-    TranscriptionSegment,
-
 } from 'livekit-client';
 
 const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000';
@@ -35,22 +35,74 @@ interface CallPageProps {
     onReset: () => void;
 }
 
-interface ChatTranscriptProps {
-    room: Room | null;
-    onUserFinalUtterance?: () => void;
-    className?: string;
-}
+const waitForParticipantActive = async (participant: LocalParticipant, timeoutMs = 8000) => {
+    if (participant.isActive) {
+        return true;
+    }
 
-interface TranscriptMessage {
-    id: string;
-    identity: string;
-    role: 'user' | 'agent';
-    text: string;
-    isFinal: boolean;
-}
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([
+            participant.waitUntilActive(),
+            new Promise<void>((_, reject) => {
+                timeoutHandle = setTimeout(() => {
+                    reject(new Error('Timed out waiting for LiveKit participant activation'));
+                }, timeoutMs);
+            }),
+        ]);
+        return true;
+    } catch (error) {
+        console.warn('LiveKit participant did not become active before timeout', error);
+        return false;
+    } finally {
+        if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+        }
+    }
+};
+
+const waitForReliableDataChannel = async (room: Room, timeoutMs = 8000) => {
+    const engine = room.engine;
+    if (!engine) {
+        throw new Error('LiveKit engine not initialised');
+    }
+
+    await engine.ensureDataTransportConnected(DataPacket_Kind.RELIABLE, false);
+
+    const reliableChannel = engine.dataChannelForKind(DataPacket_Kind.RELIABLE);
+    if (!reliableChannel) {
+        throw new Error('Reliable data channel not available');
+    }
+    if (reliableChannel.readyState === 'open') {
+        return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+        const handleOpen = () => {
+            cleanup();
+            resolve();
+        };
+        const handleClose = () => {
+            cleanup();
+            reject(new Error('Reliable data channel closed before opening'));
+        };
+        const cleanup = () => {
+            reliableChannel.removeEventListener('open', handleOpen);
+            reliableChannel.removeEventListener('close', handleClose);
+            clearTimeout(timeout);
+        };
+        const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error('Timed out waiting for LiveKit reliable data channel'));
+        }, timeoutMs);
+
+        reliableChannel.addEventListener('open', handleOpen);
+        reliableChannel.addEventListener('close', handleClose);
+    });
+};
 
 
-type StageKey = 'greeting' | 'payment_process' | 'payment_options' | 'rca_kyc';
+type StageKey = 'greeting' | 'payment_options' | 'nbfc_selection' | 'kyc' | 'rca';
 
 interface StageConfig {
     key: StageKey;
@@ -81,16 +133,8 @@ const STAGE_FLOW: StageConfig[] = [
         title: 'Greeting',
         guidance: 'Harshitha will welcome you and confirm your learner details.',
         microcopy: 'Most families complete this welcome in under 2 minutes.',
-        ctaLabel: 'Begin Payment Process',
+        ctaLabel: 'Proceed to payment options',
         accent: 'from-sky-300 to-indigo-400',
-    },
-    {
-        key: 'payment_process',
-        title: 'Payment Process',
-        guidance: 'We outline fees, scholarships, and timelines before you decide.',
-        microcopy: 'We never charge until you confirm the plan that fits best.',
-        ctaLabel: 'Select Payment Option',
-        accent: 'from-indigo-300 to-violet-400',
     },
     {
         key: 'payment_options',
@@ -101,12 +145,28 @@ const STAGE_FLOW: StageConfig[] = [
         accent: 'from-emerald-300 to-sky-400',
     },
     {
-        key: 'rca_kyc',
-        title: 'RCA & KYC Checklist',
+        key: 'nbfc_selection',
+        title: 'NBFC Selection',
+        guidance: 'Pick the 0% EMI partner and review approval details together.',
+        microcopy: 'Fast digital approvals keep the momentum going.',
+        ctaLabel: 'Continue to KYC',
+        accent: 'from-indigo-300 to-violet-400',
+    },
+    {
+        key: 'kyc',
+        title: 'KYC Verification',
         guidance: 'Upload or verify documents so we can wrap compliance quickly.',
         microcopy: 'Most families finish documents in under 10 minutes.',
-        ctaLabel: 'Upload PAN',
+        ctaLabel: 'Mark Documents Complete',
         accent: 'from-amber-300 to-rose-300',
+    },
+    {
+        key: 'rca',
+        title: 'RCA Wrap-up',
+        guidance: 'Summarize commitments, confirm timelines, and close confidently.',
+        microcopy: 'We keep the finale crisp and action-oriented.',
+        ctaLabel: 'Finish Call',
+        accent: 'from-purple-300 to-fuchsia-400',
     },
 ];
 
@@ -129,6 +189,33 @@ const PAYMENT_OPTIONS: PaymentOption[] = [
         subtitle: 'Most flexible monthly plans',
         description: 'Instant, paperless approval with auto-debit mandate to keep cash flow light.',
     },
+];
+
+const NBFC_PARTNERS = [
+    {
+        key: 'bajaj',
+        title: 'Bajaj Finserv',
+        turnaround: 'Instant approval',
+        description: 'Digital KYC with Aadhaar OTP and auto-debit mandate setup in-call.',
+    },
+    {
+        key: 'hdfc',
+        title: 'HDFC Credila',
+        turnaround: 'Within 30 minutes',
+        description: 'Zero-processing fee offer for NxtWave learners with simple bank statement upload.',
+    },
+    {
+        key: 'tata',
+        title: 'Tata Capital',
+        turnaround: 'Same-day confirmation',
+        description: 'Flexible 6-18 month repayment options with multilingual support.',
+    },
+];
+
+const RCA_SUMMARY_POINTS = [
+    'Confirm the learner’s batch start date and onboarding checklist.',
+    'Share support channel details and escalation contact for the family.',
+    'Remind them when the welcome kit and LMS access details will arrive.',
 ];
 
 const DOCUMENT_CHECKLIST: DocumentItem[] = [
@@ -161,21 +248,6 @@ const GREETING_POINTS = [
     'Warm hello and quick verification of your learner details.',
     'Short overview of the course flow and mentor support you will receive.',
     'Set expectations on payment assistance and escalation paths.',
-];
-
-const PAYMENT_PROCESS_STEPS = [
-    {
-        title: 'Review Plan',
-        description: 'Confirm course fee, scholarships, and any add-ons with Harshitha before you proceed.',
-    },
-    {
-        title: 'Secure Link',
-        description: 'Receive a safe payment link or OTP depending on the payment mode you pick.',
-    },
-    {
-        title: 'Instant Receipt',
-        description: 'Digital receipt and onboarding confirmation shared on WhatsApp and email instantly.',
-    },
 ];
 
 const avatarShellMap: Record<AvatarState, string> = {
@@ -269,109 +341,6 @@ const LoginPage: React.FC<LoginPageProps> = ({ onStartCall }) => {
         </div>
     );
 };
-
-
-const ChatTranscript: React.FC<ChatTranscriptProps> = ({ room, onUserFinalUtterance, className }) => {
-    const [messages, setMessages] = useState<TranscriptMessage[]>([]);
-    const containerRef = useRef<HTMLDivElement | null>(null);
-    const applyClassName = (base: string) => (className ? `${base} ${className}` : base);
-
-    useEffect(() => {
-        setMessages([]);
-    }, [room]);
-
-    useEffect(() => {
-        const container = containerRef.current;
-        if (container) {
-            container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-        }
-    }, [messages]);
-
-    useEffect(() => {
-        if (!room) {
-            return;
-        }
-        const handleSegments = (segments: TranscriptionSegment[], participant?: Participant) => {
-            const source = participant ?? room.localParticipant;
-            if (!source) {
-                return;
-            }
-            const isUser = source.identity === room.localParticipant.identity;
-            const identity = source.identity || (isUser ? 'You' : 'Agent');
-            setMessages((previous) => {
-                const nextMessages = [...previous];
-                const lastMessage = nextMessages[nextMessages.length - 1];
-                const shouldStartNew = !lastMessage || lastMessage.identity !== identity || lastMessage.isFinal;
-                let workingMessage: TranscriptMessage;
-                if (shouldStartNew) {
-                    workingMessage = {
-                        id: `${identity}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                        identity,
-                        role: isUser ? 'user' : 'agent',
-                        text: '',
-                        isFinal: false,
-                    };
-                    nextMessages.push(workingMessage);
-                } else {
-                    workingMessage = { ...lastMessage };
-                    nextMessages[nextMessages.length - 1] = workingMessage;
-                }
-                let finalFlag = workingMessage.isFinal;
-                segments.forEach((segment) => {
-                    workingMessage.text += segment.text;
-                    if (segment.final) {
-                        finalFlag = true;
-                    }
-                });
-                workingMessage.isFinal = finalFlag;
-                return nextMessages;
-            });
-            if (isUser && segments.some((segment) => segment.final)) {
-                onUserFinalUtterance?.();
-            }
-        };
-        room.on(RoomEvent.TranscriptionReceived, handleSegments);
-        return () => {
-            room.off(RoomEvent.TranscriptionReceived, handleSegments);
-        };
-    }, [room, onUserFinalUtterance]);
-
-    if (!room) {
-        return (
-            <div className={applyClassName('flex min-h-[18rem] w-full items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/70 text-slate-500')}>
-                Transcript will appear once the call connects.
-            </div>
-        );
-    }
-
-    return (
-        <div
-            ref={containerRef}
-            className={applyClassName('min-h-[22rem] w-full overflow-y-auto rounded-3xl border border-slate-100 bg-white/90 p-6 shadow-inner backdrop-blur')}
-        >
-            <ul className="space-y-4">
-                {messages.map((message) => {
-                    const isUser = message.role === 'user';
-                    return (
-                        <li key={message.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                            <div
-                                className={`max-w-xs rounded-3xl px-4 py-3 text-sm sm:max-w-md ${
-                                    isUser ? 'bg-sky-500 text-white shadow-lg' : 'bg-slate-100 text-slate-800 shadow'
-                                }`}
-                            >
-                                <p className="text-xs font-semibold uppercase tracking-wide text-white/70">
-                                    {isUser ? 'You' : 'Agent'}
-                                </p>
-                                <p className="mt-1 whitespace-pre-wrap leading-relaxed">{message.text || '...'}</p>
-                            </div>
-                        </li>
-                    );
-                })}
-            </ul>
-        </div>
-    );
-};
-
 const agentDisplayName = 'Harshitha';
 
 const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
@@ -381,8 +350,10 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
     const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Disconnected);
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [avatarState, setAvatarState] = useState<AvatarState>('idle');
-    const [currentStageIndex, setCurrentStageIndex] = useState(2); // Start at payment_options
+    const [currentStageIndex, setCurrentStageIndex] = useState(0);
     const [selectedPaymentRoute, setSelectedPaymentRoute] = useState<PaymentOption['key']>('nbfc-emi');
+    const [flowCompleted, setFlowCompleted] = useState(false);
+    const [agentFollowup, setAgentFollowup] = useState<string | null>(null);
     const [documentState, setDocumentState] = useState<Record<string, boolean>>(() =>
         Object.fromEntries(DOCUMENT_CHECKLIST.map((doc) => [doc.key, false])),
     );
@@ -395,7 +366,7 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
         .join(' ');
     const avatarStateLabel = avatarStateLabelMap[avatarState];
     const visualProgressPercent = currentStageIndex === 0 ? 4 : stageProgressPercent;
-    const isPrimaryDisabled = isConnecting && !room;
+    const isPrimaryDisabled = (isConnecting && !room) || flowCompleted;
     const audioRootRef = useRef<HTMLDivElement | null>(null);
     const roomRef = useRef<Room | null>(null);
     const avatarStateRef = useRef<AvatarState>('idle');
@@ -436,6 +407,9 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             setIsConnecting(true);
             setConnectionError(null);
             updateAvatarState('thinking');
+            setFlowCompleted(false);
+            setAgentFollowup(null);
+            setCurrentStageIndex(0);
             const tokenUrl = new URL('/get-token', backendUrl);
             tokenUrl.searchParams.set('room_name', roomName);
             tokenUrl.searchParams.set('identity', user.name);
@@ -449,8 +423,9 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             }
             const livekitUrl = data.livekit_url ?? defaultLivekitUrl;
             const newRoom = new Room({ 
-                adaptiveStream: true, 
+                adaptiveStream: false, // This is the change
                 dynacast: true,
+                reconnectPolicy: new DefaultReconnectPolicy(),
                 publishDefaults: {
                     audioPreset: {
                         maxBitrate: 20_000,
@@ -460,30 +435,45 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             roomRef.current = newRoom;
             
             // Connect to room first
-            await newRoom.connect(livekitUrl, data.token);
-            
-            // Wait for connection to stabilize before enabling microphone
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await newRoom.connect(livekitUrl, data.token, { rtcConfig: { iceTransportPolicy: 'relay' } });
+
+            const [participantActive] = await Promise.all([
+                waitForParticipantActive(newRoom.localParticipant),
+                waitForReliableDataChannel(newRoom),
+            ]);
+            if (!participantActive) {
+                console.warn('Proceeding before LiveKit participant reported as active');
+            }
             
             // Enable microphone with proper error handling
             try {
                 await newRoom.localParticipant.setMicrophoneEnabled(true);
             } catch (micError) {
                 console.warn('Failed to enable microphone:', micError);
-                // Continue without microphone - user can enable later
+                throw new Error('Unable to enable microphone. Please check your microphone permissions.');
             }
             
             // Listen for agent data messages
-            newRoom.on('dataReceived', (payload: Uint8Array, participant) => {
+            newRoom.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
                 try {
                     const data = JSON.parse(new TextDecoder().decode(payload));
                     if (data.status === 'ended') {
+                        if (typeof data.agent_message === 'string') {
+                            setAgentFollowup(data.agent_message);
+                        }
+                        setFlowCompleted(true);
                         // Conversation ended, disconnect
                         setTimeout(() => {
                             newRoom.disconnect();
                             onReset();
                         }, 3000); // Wait 3 seconds for final message
                     } else if (data.advance_stage && data.stage) {
+                        if (typeof data.agent_message === 'string') {
+                            setAgentFollowup(data.agent_message);
+                        }
+                        if (data.stage === 'flow_complete') {
+                            setFlowCompleted(true);
+                        }
                         // Advance to next stage
                         const stageIndex = STAGE_FLOW.findIndex(s => s.key === data.stage);
                         if (stageIndex !== -1) {
@@ -500,27 +490,30 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             setConnectionState(newRoom.state);
             updateAvatarState('idle');
             
-            // Immediately sync to payment_options stage
-            setCurrentStageIndex(2);
-            
-            // Wait a bit more before publishing data to ensure publisher is ready
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            try {
-                const payload = new TextEncoder().encode(JSON.stringify({ stage: 'payment_options' }));
+            // Immediately sync to greeting stage
+            setCurrentStageIndex(0);
+
+            const publishInitialStage = async () => {
+                await waitForReliableDataChannel(newRoom);
+                const payload = new TextEncoder().encode(JSON.stringify({ stage: 'greeting', action: 'start' }));
                 await newRoom.localParticipant.publishData(payload, { reliable: true });
-            } catch (error) {
-                console.error('Failed to send initial stage update', error);
-                // Retry once after a delay
-                setTimeout(async () => {
-                    try {
-                        const payload = new TextEncoder().encode(JSON.stringify({ stage: 'payment_options' }));
-                        await newRoom.localParticipant.publishData(payload, { reliable: true });
-                    } catch (retryError) {
-                        console.error('Retry failed for initial stage update', retryError);
+            };
+
+            const publishWithRetry = async (attempt = 1): Promise<void> => {
+                try {
+                    await publishInitialStage();
+                } catch (error) {
+                    console.warn(`Failed to send initial stage update (attempt ${attempt})`, error);
+                    if (attempt >= 3) {
+                        console.error('Giving up on initial stage update after retries', error);
+                        return;
                     }
-                }, 2000);
-            }
+                    await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+                    await publishWithRetry(attempt + 1);
+                }
+            };
+
+            await publishWithRetry();
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error occurred while connecting';
             setConnectionError(message);
@@ -529,7 +522,7 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
         } finally {
             setIsConnecting(false);
         }
-    }, [cleanupRoom, updateAvatarState, user.name]);
+    }, [cleanupRoom, onReset, updateAvatarState, user.name]);
     useEffect(() => {
         if (hasAttemptedConnection.current) {
             return;
@@ -575,13 +568,27 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             setConnectionState(ConnectionState.Disconnected);
             updateAvatarState('error');
         };
+        const handleSignalReconnecting = () => {
+            setConnectionState(ConnectionState.SignalReconnecting);
+            updateAvatarState('thinking');
+        };
+        const handleSignalReconnected = () => {
+            setConnectionState(ConnectionState.Connected);
+            if (avatarStateRef.current !== 'speaking') {
+                updateAvatarState('idle');
+            }
+        };
         currentRoom.on(RoomEvent.ConnectionStateChanged, handleConnectionStateChange);
         currentRoom.on(RoomEvent.ActiveSpeakersChanged, handleActiveSpeakers);
         currentRoom.on(RoomEvent.Disconnected, handleDisconnected);
+        currentRoom.on(RoomEvent.SignalReconnecting, handleSignalReconnecting);
+        currentRoom.on(RoomEvent.Reconnected, handleSignalReconnected);
         return () => {
             currentRoom.off(RoomEvent.ConnectionStateChanged, handleConnectionStateChange);
             currentRoom.off(RoomEvent.ActiveSpeakersChanged, handleActiveSpeakers);
             currentRoom.off(RoomEvent.Disconnected, handleDisconnected);
+            currentRoom.off(RoomEvent.SignalReconnecting, handleSignalReconnecting);
+            currentRoom.off(RoomEvent.Reconnected, handleSignalReconnected);
         };
     }, [room, updateAvatarState, clearTimers]);
     useEffect(() => {
@@ -653,17 +660,6 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             currentRoom.off(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
         };
     }, [room]);
-    const handleUserFinalUtterance = useCallback(() => {
-        if (thinkingFallbackTimeout.current) {
-            clearTimeout(thinkingFallbackTimeout.current);
-        }
-        updateAvatarState('thinking');
-        thinkingFallbackTimeout.current = setTimeout(() => {
-            if (avatarStateRef.current === 'thinking') {
-                updateAvatarState('idle');
-            }
-        }, 8000);
-    }, [updateAvatarState]);
     const sendStageUpdate = useCallback(
         async (stage: string) => {
             if (!room) {
@@ -678,6 +674,20 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
         },
         [room],
     );
+    const publishAgentEvent = useCallback(
+        async (data: Record<string, unknown>) => {
+            if (!room) {
+                return;
+            }
+            try {
+                const payload = new TextEncoder().encode(JSON.stringify(data));
+                await room.localParticipant.publishData(payload, { reliable: true });
+            } catch (error) {
+                console.error('Failed to publish agent event', error);
+            }
+        },
+        [room],
+    );
     const handleStageSelect = useCallback(
         (index: number) => {
             setCurrentStageIndex(index);
@@ -685,11 +695,57 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
         },
         [sendStageUpdate],
     );
+    const handlePaymentSelection = useCallback(
+        async (option: PaymentOption) => {
+            setSelectedPaymentRoute(option.key);
+            const currentStageKey = STAGE_FLOW[currentStageIndex]?.key ?? 'payment_options';
+            const basePayload = {
+                type: 'payment_option.selected',
+                stage: currentStageKey,
+                choice: option.key,
+                choice_title: option.title,
+            };
+
+            if (option.key === 'full-payment' || option.key === 'credit-card') {
+                const agentMessage = 'Our human agent will contact you shortly for the payment process.';
+                setAgentFollowup(agentMessage);
+                setFlowCompleted(true);
+                await publishAgentEvent({
+                    ...basePayload,
+                    next_stage: 'flow_complete',
+                    agent_message: agentMessage,
+                });
+                void sendStageUpdate('flow_complete');
+                return;
+            }
+
+            if (option.key === 'nbfc-emi') {
+                const agentMessage = 'Great! Let me unlock the 0% EMI loan steps for you.';
+                setAgentFollowup(agentMessage);
+                setFlowCompleted(false);
+                const nextStage: StageKey = 'nbfc_selection';
+                await publishAgentEvent({
+                    ...basePayload,
+                    next_stage: nextStage,
+                    agent_message: agentMessage,
+                });
+                const nextIndex = STAGE_FLOW.findIndex((stage) => stage.key === nextStage);
+                if (nextIndex !== -1) {
+                    setCurrentStageIndex(nextIndex);
+                }
+                void sendStageUpdate(nextStage);
+                return;
+            }
+
+            await publishAgentEvent(basePayload);
+        },
+        [currentStageIndex, publishAgentEvent, sendStageUpdate],
+    );
 
     const handlePrimaryAction = useCallback(() => {
         if (currentStageIndex >= STAGE_FLOW.length - 1) {
             void sendStageUpdate(STAGE_FLOW[currentStageIndex].key);
-            if (STAGE_FLOW[currentStageIndex].key === 'rca_kyc') {
+            if (STAGE_FLOW[currentStageIndex].key === 'kyc') {
                 setDocumentState((previous) => ({ ...previous, pan: true }));
             }
             return;
@@ -717,28 +773,6 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
                         </ul>
                     </div>
                 );
-            case 'payment_process':
-                return (
-                    <div className="space-y-4">
-                        <p className="text-sm font-medium text-slate-600">What happens next</p>
-                        <div className="space-y-4">
-                            {PAYMENT_PROCESS_STEPS.map((step, index) => (
-                                <div
-                                    key={step.title}
-                                    className="flex gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-4 shadow-sm transition hover:border-sky-200"
-                                >
-                                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-50 text-sm font-semibold text-indigo-600">
-                                        {index + 1}
-                                    </span>
-                                    <div>
-                                        <p className="text-sm font-semibold text-slate-700">{step.title}</p>
-                                        <p className="mt-1 text-sm text-slate-500 leading-relaxed">{step.description}</p>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                );
             case 'payment_options':
                 return (
                     <div className="space-y-4">
@@ -750,21 +784,8 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
                                     <button
                                         key={option.key}
                                         type="button"
-                                        onClick={() => {
-                                            setSelectedPaymentRoute(option.key);
-                                            // Send payment choice to agent immediately
-                                            if (room) {
-                                                try {
-                                                    const payload = new TextEncoder().encode(JSON.stringify({ 
-                                                        payment_choice: option.key,
-                                                        choice_title: option.title 
-                                                    }));
-                                                    room.localParticipant.publishData(payload, { reliable: true });
-                                                } catch (error) {
-                                                    console.error('Failed to send payment choice', error);
-                                                }
-                                            }
-                                        }}
+                                        onClick={() => void handlePaymentSelection(option)}
+                                        disabled={flowCompleted}
                                         className={`group flex flex-col gap-2 rounded-2xl border px-4 py-4 text-left transition ${
                                             isSelected
                                                 ? 'border-sky-400 bg-sky-50 shadow-lg'
@@ -785,9 +806,36 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
                                 );
                             })}
                         </div>
+                        {agentFollowup && (
+                            <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700 shadow-sm">
+                                {agentFollowup}
+                            </div>
+                        )}
                     </div>
                 );
-            case 'rca_kyc':
+            case 'nbfc_selection':
+                return (
+                    <div className="space-y-4">
+                        <p className="text-sm font-medium text-slate-600">Recommended lending partners</p>
+                        <div className="space-y-3">
+                            {NBFC_PARTNERS.map((partner) => (
+                                <div
+                                    key={partner.key}
+                                    className="flex flex-col gap-2 rounded-2xl border border-indigo-100 bg-white/80 px-4 py-4 shadow-sm"
+                                >
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-base font-semibold text-slate-800">{partner.title}</p>
+                                        <span className="rounded-full bg-indigo-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-600">
+                                            {partner.turnaround}
+                                        </span>
+                                    </div>
+                                    <p className="text-sm leading-relaxed text-slate-600">{partner.description}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                );
+            case 'kyc':
                 return (
                     <div className="space-y-4">
                         <p className="text-sm font-medium text-slate-600">Document checklist</p>
@@ -839,6 +887,22 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
                         </div>
                     </div>
                 );
+            case 'rca':
+                return (
+                    <div className="space-y-4">
+                        <p className="text-sm font-medium text-slate-600">Before we wrap</p>
+                        <ul className="space-y-3 text-sm text-slate-600">
+                            {RCA_SUMMARY_POINTS.map((item, index) => (
+                                <li key={item} className="flex items-start gap-3">
+                                    <span className="mt-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-fuchsia-100 text-xs font-semibold text-fuchsia-600">
+                                        {index + 1}
+                                    </span>
+                                    <span className="leading-relaxed">{item}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                );
             default:
                 return null;
         }
@@ -871,7 +935,6 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             case ConnectionState.Connected:
                 return 'bg-emerald-100 text-emerald-700';
             case ConnectionState.Reconnecting:
-            case ConnectionState.SignalReconnecting:
                 return 'bg-amber-100 text-amber-700';
             default:
                 return 'bg-slate-200 text-slate-600';
@@ -1072,11 +1135,7 @@ return (
                             <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Transcript</h3>
                             <span className="text-xs text-slate-400">Live conversation</span>
                         </div>
-                        <ChatTranscript
-                            room={room}
-                            onUserFinalUtterance={handleUserFinalUtterance}
-                            className="min-h-[22rem] border-0 bg-transparent p-0 shadow-none"
-                        />
+                        <ChatTranscript room={room} />
                     </div>
                 </section>
                 <section className="flex flex-col gap-4 rounded-3xl bg-white/90 px-6 py-5 shadow-lg shadow-sky-100/50 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
@@ -1126,7 +1185,3 @@ const HomePage: React.FC = () => {
 };
 
 export default HomePage;
-
-
-
-

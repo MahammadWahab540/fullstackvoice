@@ -3,7 +3,7 @@ import asyncio
 import json
 from dotenv import load_dotenv
 
-from livekit import agents
+from livekit import agents, rtc
 from livekit.agents import (
     AgentSession,
     Agent,
@@ -63,7 +63,7 @@ class NxtWaveOnboardingAgent(agents.Agent):
     def __init__(self, query_engine, llm_instructions):
         super().__init__(instructions=llm_instructions)
         self.query_engine = query_engine
-        self.current_stage = "payment_options"
+        self.current_stage = "greeting"
         self.user_payment_choice = None
         # Store the agent's session to generate replies from any method
         self.agent_session: AgentSession | None = None
@@ -112,42 +112,33 @@ class NxtWaveOnboardingAgent(agents.Agent):
     async def _handle_payment_selection(self, turn_ctx: ChatContext):
         """Handle payment option selection with validation logic"""
         if self.user_payment_choice in ["credit_card", "full_payment"]:
-            # End flow with PRExpert message
-            response = "Our PRExpert will be contacting you shortly."
-            await turn_ctx.session.generate_reply(instructions=f"Say: '{response}' in Telugu.")
-            self.current_stage = "ended"
-            
-            # Notify frontend conversation has ended
-            if hasattr(self.agent_session, 'room') and self.agent_session.room:
-                try:
-                    import json
-                    payload = json.dumps({"status": "ended", "message": "conversation_completed"})
-                    await self.agent_session.room.local_participant.publish_data(
-                        payload.encode(), reliable=True
-                    )
-                except Exception as e:
-                    print(f"Failed to send ended status: {e}")
-                    
+            await self._process_payment_transition(
+                next_stage="flow_complete",
+                agent_message="Our human agent will contact you shortly for the payment process.",
+                reply_session=turn_ctx.session,
+            )
         elif self.user_payment_choice == "nbfc_emi":
-            # Continue flow
-            response = "We are processing your request. Moving to the next stage."
-            await turn_ctx.session.generate_reply(instructions=f"Say: '{response}' in Telugu.")
-            self.current_stage = "next_stage"
-            
-            # Notify frontend to advance to next stage  
-            if hasattr(self.agent_session, 'room') and self.agent_session.room:
-                try:
-                    import json
-                    payload = json.dumps({"stage": "rca_kyc", "advance_stage": True})
-                    await self.agent_session.room.local_participant.publish_data(
-                        payload.encode(), reliable=True
-                    )
-                except Exception as e:
-                    print(f"Failed to send stage advance: {e}")
+            await self._process_payment_transition(
+                next_stage="nbfc_selection",
+                agent_message="Great! Let me unlock the 0% EMI loan steps for you.",
+                reply_session=turn_ctx.session,
+            )
 
     async def on_data_received(self, data: bytes, participant_identity: str):
         try:
             payload = json.loads(data.decode())
+            if payload.get('type') == 'payment_option.selected':
+                choice = payload.get('choice')
+                next_stage = payload.get('next_stage')
+                agent_message = payload.get('agent_message')
+                self._map_payment_choice(choice)
+                if next_stage:
+                    await self._process_payment_transition(
+                        next_stage=next_stage,
+                        agent_message=agent_message,
+                        reply_session=self.agent_session,
+                    )
+                return
             if 'stage' in payload:
                 new_stage = payload['stage']
                 print(f"Received new stage from frontend: {new_stage}")
@@ -157,15 +148,9 @@ class NxtWaveOnboardingAgent(agents.Agent):
                 choice = payload['payment_choice']
                 choice_title = payload.get('choice_title', choice)
                 print(f"Received payment choice from frontend: {choice} ({choice_title})")
-                
-                # Map frontend keys to backend logic
-                if choice in ['credit-card', 'credit-card-emi']:
-                    self.user_payment_choice = "credit_card"
-                elif choice == 'full-payment':
-                    self.user_payment_choice = "full_payment"
-                elif choice in ['nbfc-emi', '0%-interest-loan-with-nbfc-(emi)']:
-                    self.user_payment_choice = "nbfc_emi"
-                
+
+                self._map_payment_choice(choice)
+
                 if self.agent_session:
                     await self._handle_payment_selection_direct()
         except Exception as e:
@@ -174,55 +159,100 @@ class NxtWaveOnboardingAgent(agents.Agent):
     async def _handle_payment_selection_direct(self):
         """Handle payment option selection sent directly from frontend"""
         if self.user_payment_choice in ["credit_card", "full_payment"]:
-            # End flow with PRExpert message
-            response = "Our PRExpert will be contacting you shortly."
-            await self.agent_session.generate_reply(instructions=f"Say: '{response}' in Telugu.")
-            self.current_stage = "ended"
-            
-            # Notify frontend conversation has ended
-            if hasattr(self.agent_session, 'room') and self.agent_session.room:
-                try:
-                    import json
-                    payload = json.dumps({"status": "ended", "message": "conversation_completed"})
-                    await self.agent_session.room.local_participant.publish_data(
-                        payload.encode(), reliable=True
-                    )
-                except Exception as e:
-                    print(f"Failed to send ended status: {e}")
-                    
+            await self._process_payment_transition(
+                next_stage="flow_complete",
+                agent_message="Our human agent will contact you shortly for the payment process.",
+                reply_session=self.agent_session,
+            )
         elif self.user_payment_choice == "nbfc_emi":
-            # Continue flow
-            response = "We are processing your request. Moving to the next stage."
-            await self.agent_session.generate_reply(instructions=f"Say: '{response}' in Telugu.")
-            self.current_stage = "next_stage"
-            
-            # Notify frontend to advance to next stage  
-            if hasattr(self.agent_session, 'room') and self.agent_session.room:
-                try:
-                    import json
-                    payload = json.dumps({"stage": "rca_kyc", "advance_stage": True})
-                    await self.agent_session.room.local_participant.publish_data(
-                        payload.encode(), reliable=True
-                    )
-                except Exception as e:
-                    print(f"Failed to send stage advance: {e}")
+            await self._process_payment_transition(
+                next_stage="nbfc_selection",
+                agent_message="Great! Let me unlock the 0% EMI loan steps for you.",
+                reply_session=self.agent_session,
+            )
+
+    def _map_payment_choice(self, choice: str | None) -> None:
+        if not choice:
+            return
+        if choice in ['credit-card', 'credit-card-emi']:
+            self.user_payment_choice = "credit_card"
+        elif choice == 'full-payment':
+            self.user_payment_choice = "full_payment"
+        elif choice in ['nbfc-emi', '0%-interest-loan-with-nbfc-(emi)']:
+            self.user_payment_choice = "nbfc_emi"
+
+    async def _process_payment_transition(
+        self,
+        next_stage: str,
+        agent_message: str | None,
+        reply_session: AgentSession | None,
+    ) -> None:
+        if agent_message and reply_session:
+            await reply_session.generate_reply(instructions=f"Say: '{agent_message}' in Telugu.")
+
+        if next_stage == "flow_complete":
+            self.current_stage = "completed"
+            await self._notify_flow_complete(agent_message)
+            return
+
+        self.current_stage = next_stage
+        await self._notify_stage_update(next_stage, agent_message)
+        await self.update_agent_for_stage()
+
+    async def _notify_flow_complete(self, agent_message: str | None) -> None:
+        if hasattr(self.agent_session, 'room') and self.agent_session.room:
+            try:
+                payload = {"status": "ended", "message": "conversation_completed"}
+                if agent_message:
+                    payload["agent_message"] = agent_message
+                await self.agent_session.room.local_participant.publish_data(
+                    json.dumps(payload).encode(), reliable=True
+                )
+            except Exception as e:
+                print(f"Failed to send ended status: {e}")
+
+    async def _notify_stage_update(self, next_stage: str, agent_message: str | None) -> None:
+        if hasattr(self.agent_session, 'room') and self.agent_session.room:
+            try:
+                payload = {"stage": next_stage, "advance_stage": True}
+                if agent_message:
+                    payload["agent_message"] = agent_message
+                await self.agent_session.room.local_participant.publish_data(
+                    json.dumps(payload).encode(), reliable=True
+                )
+            except Exception as e:
+                print(f"Failed to send stage advance: {e}")
 
     async def update_agent_for_stage(self):
         stage_instructions = ""
-        if self.current_stage == "payment_options":
+        if self.current_stage == "greeting":
+            stage_instructions = (
+                "Greet the family warmly, introduce yourself as Harshitha from NxtWave, "
+                "and confirm the learner's name before moving to payment options."
+            )
+        elif self.current_stage == "payment_options":
             stage_instructions = (
                 "Present 3 payment options: 1. Credit Card, 2. Full Payment, 3. 0% Interest Loan with NBFC (EMI). "
                 "Ask user to choose one. Be brief and direct."
             )
-        elif self.current_stage == "next_stage":
+        elif self.current_stage == "nbfc_selection":
             stage_instructions = (
-                "Continue with the next steps of the onboarding process. Guide them through the EMI setup."
+                "The user chose the 0% EMI path. Help them pick an NBFC partner, explain the approval steps, "
+                "and mention the documents they need for instant processing."
             )
-        elif self.current_stage == "ended":
+        elif self.current_stage == "kyc":
+            stage_instructions = (
+                "Guide the family through document submission. Confirm PAN, address proof, and bank statement uploads."
+            )
+        elif self.current_stage == "rca":
+            stage_instructions = (
+                "Summarize commitments, confirm timelines, and close the call with clear next steps."
+            )
+        elif self.current_stage in ["completed", "flow_complete"]:
             return  # Conversation has ended
 
         if self.agent_session and stage_instructions:
-             await self.agent_session.generate_reply(
+            await self.agent_session.generate_reply(
                 instructions=f"Move to '{self.current_stage}' stage. In Telugu: {stage_instructions}"
             )
 
@@ -250,7 +280,10 @@ async def entrypoint(ctx: JobContext):
     agent_instance.on_data_received = agent_instance.on_data_received
 
     await session.start(room=ctx.room, agent=agent_instance)
-    await ctx.connect()
+    # Configure the agent to use a reliable connection (TCP/relay)
+    rtc_config = rtc.RTCConfiguration(ice_transport_policy=rtc.IceTransportPolicy.RELAY)
+    await ctx.connect(options=rtc.RoomOptions(rtc_config=rtc_config))
+    await asyncio.sleep(2)  # allow connection to stabilize before speaking
     print(f"{AGENT_SPOKEN_NAME} connected. Waiting for user interaction.")
 
     # Proactive greeting with immediate payment options

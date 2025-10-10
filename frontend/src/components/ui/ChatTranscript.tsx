@@ -9,6 +9,7 @@ import {
     Track,
     TrackEvent,
     TrackPublication,
+    TranscriptionSegment,
 } from 'livekit-client';
 import React, { useEffect, useRef, useState } from 'react';
 
@@ -30,7 +31,7 @@ export function ChatTranscript({ room }: ChatTranscriptProps) {
         if (!room) return;
 
         const handleTranscription = (
-            transcription: { segments: { text: string; final: boolean }[] },
+            segments: TranscriptionSegment[],
             participant: LocalParticipant | RemoteParticipant | undefined
         ) => {
             if (!participant) return;
@@ -45,7 +46,7 @@ export function ChatTranscript({ room }: ChatTranscriptProps) {
                 }
 
                 let isFinal = false;
-                transcription.segments.forEach((segment) => {
+                segments.forEach((segment) => {
                     lastMessage!.text += segment.text;
                     if (segment.final) {
                         isFinal = true;
@@ -59,18 +60,18 @@ export function ChatTranscript({ room }: ChatTranscriptProps) {
 
         const handleTrackSubscribed = (track: Track, publication: TrackPublication, participant: RemoteParticipant) => {
             if (track.kind === Track.Kind.Audio) {
-                track.on(TrackEvent.TranscriptionReceived, (transcription) =>
-                    handleTranscription(transcription, participant)
-                );
+                track.on(TrackEvent.TranscriptionReceived, (transcription) => {
+                    handleTranscription(transcription, participant);
+                });
             }
         };
 
         const handleLocalTrackPublished = (publication: TrackPublication) => {
             const track = publication.track;
             if (track && track.kind === Track.Kind.Audio) {
-                track.on(TrackEvent.TranscriptionReceived, (transcription: any) =>
-                    handleTranscription(transcription, room.localParticipant)
-                );
+                track.on(TrackEvent.TranscriptionReceived, (transcription) => {
+                    handleTranscription(transcription, room.localParticipant);
+                });
             }
         };
 
