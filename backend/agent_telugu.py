@@ -37,7 +37,7 @@ def initialize_rag_pipeline_globally():
     try:
         # Configure the LLM and embedding models from Google GenAI
         # Make sure the GOOGLE_API_KEY is set in your .env file
-        Settings.llm = GoogleGenAI(model="models/gemini-1.5-flash-latest")
+        Settings.llm = GoogleGenAI(model="models/gemini-2.5-flash")
         Settings.embed_model = GoogleGenAIEmbedding(model_name="models/embedding-001")
 
         # Load all documents from the 'data' directory
@@ -127,6 +127,15 @@ class NxtWaveOnboardingAgent(agents.Agent):
     async def on_data_received(self, data: bytes, participant_identity: str):
         try:
             payload = json.loads(data.decode())
+            if payload.get("action") == "force_reply":
+                print("Received force_reply from frontend. Re-engaging user.")
+                re_engagement_prompt = (
+                    f"In Tenglish, re-engage the user for the '{self.current_stage}' stage. "
+                    "Ask them a question to continue."
+                )
+                if self.agent_session:
+                    await self.agent_session.generate_reply(instructions=re_engagement_prompt)
+                return
             if payload.get('type') == 'payment_option.selected':
                 choice = payload.get('choice')
                 next_stage = payload.get('next_stage')
@@ -283,13 +292,14 @@ async def entrypoint(ctx: JobContext):
     # Configure the agent to use a reliable connection (TCP/relay)
     rtc_config = rtc.RTCConfiguration(ice_transport_policy=rtc.IceTransportPolicy.RELAY)
     await ctx.connect(options=rtc.RoomOptions(rtc_config=rtc_config))
-    await asyncio.sleep(2)  # allow connection to stabilize before speaking
+    await asyncio.sleep(4)  # allow connection to stabilize before speaking
     print(f"{AGENT_SPOKEN_NAME} connected. Waiting for user interaction.")
 
-    # Proactive greeting with immediate payment options
+    # Proactive greeting in Tenglish to engage immediately
     initial_greeting_prompt = (
-        f"Start immediately in Telugu. Say: 'Welcome back! Let's continue with your setup.' "
-        f"Then present payment options: Credit Card, Full Payment, or 0% Interest Loan with NBFC (EMI). Ask them to choose."
+        "Start immediately in Tenglish (a mix of modern Telugu and English). "
+        "Say: 'Namaste! Nenu me onboarding agent, Harshitha. I will guide you through the process until you get learning access.' "
+        "Be friendly and welcoming."
     )
     await session.generate_reply(instructions=initial_greeting_prompt)
 

@@ -35,6 +35,50 @@ interface CallPageProps {
     onReset: () => void;
 }
 
+const AgentPromptButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
+    <div className="group relative">
+        <button
+            type="button"
+            onClick={onClick}
+            className="flex h-12 w-12 items-center justify-center rounded-full bg-sky-500 text-white shadow-lg animate-blink focus:outline-none focus:ring-2 focus:ring-sky-300"
+        >
+            <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 20h9" strokeLinecap="round" strokeLinejoin="round" />
+                <path
+                    d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        </button>
+        <div className="pointer-events-none absolute bottom-full mb-2 w-max max-w-xs rounded-lg bg-slate-700 px-3 py-2 text-sm font-medium text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
+            Agent paused? Click to continue.
+            <div className="tooltip-arrow" data-popper-arrow />
+        </div>
+    </div>
+);
+
+const UserSpeakingIndicator: React.FC = () => (
+    <div className="flex h-4 w-6 items-end justify-center gap-0.5">
+        <span
+            className="w-1 animate-[speak_0.8s_ease-in-out_infinite] rounded-full bg-sky-400"
+            style={{ animationDelay: '0.1s', height: '80%' }}
+        />
+        <span
+            className="w-1 animate-[speak_0.8s_ease-in-out_infinite] rounded-full bg-sky-400"
+            style={{ animationDelay: '0.3s', height: '100%' }}
+        />
+        <span
+            className="w-1 animate-[speak_0.8s_ease-in-out_infinite] rounded-full bg-sky-400"
+            style={{ animationDelay: '0.5s', height: '60%' }}
+        />
+        <span
+            className="w-1 animate-[speak_0.8s_ease-in-out_infinite] rounded-full bg-sky-400"
+            style={{ animationDelay: '0.2s', height: '90%' }}
+        />
+    </div>
+);
+
 const waitForParticipantActive = async (participant: LocalParticipant, timeoutMs = 8000) => {
     if (participant.isActive) {
         return true;
@@ -347,6 +391,9 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
     const [room, setRoom] = useState<Room | null>(null);
     const [isConnecting, setIsConnecting] = useState(true);
     const [isMuted, setIsMuted] = useState(false);
+    const [isUserSpeaking, setIsUserSpeaking] = useState(false);
+    const [showPromptButton, setShowPromptButton] = useState(false);
+
     const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Disconnected);
     const [connectionError, setConnectionError] = useState<string | null>(null);
     const [avatarState, setAvatarState] = useState<AvatarState>('idle');
@@ -372,6 +419,9 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
     const avatarStateRef = useRef<AvatarState>('idle');
     const activeSpeakerTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
     const thinkingFallbackTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const promptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const autoPromptTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const agentHasSpokenRef = useRef(false);
     const hasAttemptedConnection = useRef(false);
     const updateAvatarState = useCallback((nextState: AvatarState) => {
         avatarStateRef.current = nextState;
@@ -394,6 +444,17 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
         setRoom(null);
         setConnectionState(ConnectionState.Disconnected);
         setIsMuted(false);
+        setIsUserSpeaking(false);
+        setShowPromptButton(false);
+        agentHasSpokenRef.current = false;
+        if (promptTimerRef.current) {
+            clearTimeout(promptTimerRef.current);
+            promptTimerRef.current = null;
+        }
+        if (autoPromptTimeoutRef.current) {
+            clearTimeout(autoPromptTimeoutRef.current);
+            autoPromptTimeoutRef.current = null;
+        }
         if (currentRoom && currentRoom.state !== ConnectionState.Disconnected) {
             try {
                 await currentRoom.disconnect();
@@ -402,6 +463,26 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             }
         }
     }, [clearTimers]);
+    const scheduleAutoPrompt = useCallback(() => {
+        if (autoPromptTimeoutRef.current) {
+            clearTimeout(autoPromptTimeoutRef.current);
+        }
+        autoPromptTimeoutRef.current = setTimeout(async () => {
+            autoPromptTimeoutRef.current = null;
+            if (agentHasSpokenRef.current || !roomRef.current) {
+                return;
+            }
+            try {
+                const payload = new TextEncoder().encode(
+                    JSON.stringify({ action: 'force_reply', reason: 'auto_prompt' }),
+                );
+                await roomRef.current.localParticipant.publishData(payload, { reliable: true });
+            } catch (error) {
+                console.error('Failed to auto prompt agent', error);
+            }
+        }, 6000);
+    }, []);
+
     const connectToLiveKit = useCallback(async () => {
         try {
             setIsConnecting(true);
@@ -410,6 +491,11 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             setFlowCompleted(false);
             setAgentFollowup(null);
             setCurrentStageIndex(0);
+            agentHasSpokenRef.current = false;
+            if (autoPromptTimeoutRef.current) {
+                clearTimeout(autoPromptTimeoutRef.current);
+                autoPromptTimeoutRef.current = null;
+            }
             const tokenUrl = new URL('/get-token', backendUrl);
             tokenUrl.searchParams.set('room_name', roomName);
             tokenUrl.searchParams.set('identity', user.name);
@@ -488,7 +574,7 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             setRoom(newRoom);
             setIsMuted(false);
             setConnectionState(newRoom.state);
-            updateAvatarState('idle');
+            updateAvatarState('speaking');
             
             // Immediately sync to greeting stage
             setCurrentStageIndex(0);
@@ -514,6 +600,7 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             };
 
             await publishWithRetry();
+            scheduleAutoPrompt();
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error occurred while connecting';
             setConnectionError(message);
@@ -522,7 +609,7 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
         } finally {
             setIsConnecting(false);
         }
-    }, [cleanupRoom, onReset, updateAvatarState, user.name]);
+    }, [cleanupRoom, onReset, scheduleAutoPrompt, updateAvatarState, user.name]);
     useEffect(() => {
         if (hasAttemptedConnection.current) {
             return;
@@ -545,10 +632,20 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             }
         };
         const handleActiveSpeakers = (speakers: Participant[]) => {
+            const localIdentity = currentRoom.localParticipant.identity;
             const agentSpeaking = speakers.some(
-                (participant) => participant.identity !== currentRoom.localParticipant.identity,
+                (participant) => participant.identity !== localIdentity,
             );
+            const userSpeaking = speakers.some(
+                (participant) => participant.identity === localIdentity,
+            );
+            setIsUserSpeaking(userSpeaking);
             if (agentSpeaking) {
+                agentHasSpokenRef.current = true;
+                if (autoPromptTimeoutRef.current) {
+                    clearTimeout(autoPromptTimeoutRef.current);
+                    autoPromptTimeoutRef.current = null;
+                }
                 clearTimers();
                 updateAvatarState('speaking');
                 return;
@@ -567,16 +664,34 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
         const handleDisconnected = () => {
             setConnectionState(ConnectionState.Disconnected);
             updateAvatarState('error');
+            setIsUserSpeaking(false);
+            setShowPromptButton(false);
+            agentHasSpokenRef.current = false;
+            if (autoPromptTimeoutRef.current) {
+                clearTimeout(autoPromptTimeoutRef.current);
+                autoPromptTimeoutRef.current = null;
+            }
         };
         const handleSignalReconnecting = () => {
             setConnectionState(ConnectionState.SignalReconnecting);
             updateAvatarState('thinking');
+            setIsUserSpeaking(false);
+            setShowPromptButton(false);
+            agentHasSpokenRef.current = false;
+            if (autoPromptTimeoutRef.current) {
+                clearTimeout(autoPromptTimeoutRef.current);
+                autoPromptTimeoutRef.current = null;
+            }
         };
         const handleSignalReconnected = () => {
             setConnectionState(ConnectionState.Connected);
             if (avatarStateRef.current !== 'speaking') {
                 updateAvatarState('idle');
             }
+            setIsUserSpeaking(false);
+            setShowPromptButton(false);
+            agentHasSpokenRef.current = false;
+            scheduleAutoPrompt();
         };
         currentRoom.on(RoomEvent.ConnectionStateChanged, handleConnectionStateChange);
         currentRoom.on(RoomEvent.ActiveSpeakersChanged, handleActiveSpeakers);
@@ -590,7 +705,34 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
             currentRoom.off(RoomEvent.SignalReconnecting, handleSignalReconnecting);
             currentRoom.off(RoomEvent.Reconnected, handleSignalReconnected);
         };
-    }, [room, updateAvatarState, clearTimers]);
+    }, [room, updateAvatarState, clearTimers, scheduleAutoPrompt]);
+    useEffect(() => {
+        const someoneActive = isUserSpeaking || avatarState === 'speaking';
+        if (someoneActive) {
+            if (promptTimerRef.current) {
+                clearTimeout(promptTimerRef.current);
+                promptTimerRef.current = null;
+            }
+            if (showPromptButton) {
+                setShowPromptButton(false);
+            }
+            return;
+        }
+
+        if (!promptTimerRef.current) {
+            promptTimerRef.current = setTimeout(() => {
+                setShowPromptButton(true);
+                promptTimerRef.current = null;
+            }, 5000);
+        }
+
+        return () => {
+            if (promptTimerRef.current) {
+                clearTimeout(promptTimerRef.current);
+                promptTimerRef.current = null;
+            }
+        };
+    }, [isUserSpeaking, avatarState, showPromptButton]);
     useEffect(() => {
         const currentRoom = room;
         if (!currentRoom) {
@@ -613,7 +755,28 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
                 node.playsInline = true;
                 node.classList.add('hidden');
                 container?.appendChild(node);
-                node.play().catch((playError: unknown) => console.warn('Audio playback failed', playError));
+                const playAttempt = node.play();
+                if (playAttempt && typeof playAttempt.catch === 'function') {
+                    playAttempt
+                        .then(() => {
+                            console.info('LiveKit audio playback started', {
+                                trackSid: track.sid,
+                                participant: participant.identity,
+                            });
+                        })
+                        .catch((playError: unknown) => {
+                            console.error('LiveKit audio playback failed', {
+                                error: playError,
+                                trackSid: track.sid,
+                                participant: participant.identity,
+                            });
+                        });
+                } else {
+                    console.warn('LiveKit audio playback promise unavailable; browser may block autoplay', {
+                        trackSid: track.sid,
+                        participant: participant.identity,
+                    });
+                }
             });
             audioElements.set(key, nodes);
         };
@@ -930,6 +1093,26 @@ const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
         await cleanupRoom();
         onReset();
     }, [cleanupRoom, onReset]);
+    const handlePromptClick = useCallback(async () => {
+        if (promptTimerRef.current) {
+            clearTimeout(promptTimerRef.current);
+            promptTimerRef.current = null;
+        }
+        setShowPromptButton(false);
+        if (!room) {
+            scheduleAutoPrompt();
+            return;
+        }
+        try {
+            const payload = new TextEncoder().encode(JSON.stringify({ action: 'force_reply' }));
+            await room.localParticipant.publishData(payload, { reliable: true });
+        } catch (error) {
+            console.error('Failed to publish agent prompt event', error);
+        } finally {
+            scheduleAutoPrompt();
+        }
+    }, [room, scheduleAutoPrompt]);
+
     const connectionBadgeClass = useMemo(() => {
         switch (connectionState) {
             case ConnectionState.Connected:
@@ -971,6 +1154,7 @@ return (
                         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Voice Agent Journey</p>
                         <div className="mt-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
                             <h1 className="text-2xl font-semibold text-slate-800">{user.name}</h1>
+                            {isUserSpeaking && <UserSpeakingIndicator />}
                             <span className="text-sm text-slate-500">{user.phone}</span>
                         </div>
                     </div>
@@ -1148,6 +1332,7 @@ return (
                         )}
                     </div>
                     <div className="flex flex-wrap items-center gap-3">
+                        {showPromptButton && <AgentPromptButton onClick={handlePromptClick} />}
                         <button
                             type="button"
                             onClick={handlePrimaryAction}
