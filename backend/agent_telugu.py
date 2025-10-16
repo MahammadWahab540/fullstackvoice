@@ -23,9 +23,46 @@ load_dotenv()
 
 # This will hold our RAG query engine
 QUERY_ENGINE = None
-AGENT_SPOKEN_NAME = "Harshitha"
+AGENT_SPOKEN_NAME = "Maya"
 AGENT_ROLE = "Registration Expert"
 CALLING_FROM_COMPANY = "NxtWave"
+
+PRE_SYSTEM_PROMPT = (
+    "You are a Program Registration Expert (PRE) representing NxtWave. "
+    "Your mission is to guide newly registered students and their parents through the Intro Call onboarding journey, "
+    "ensuring clarity, trust, and completion of the loan setup process. "
+    "You act as a voice-guided onboarding assistant who explains the process, answers queries clearly, "
+    "and ensures the family completes all actions (document uploads, verification, confirmations) during this session. "
+    "Your tone must be warm and confident, clear, jargon-free, and human, supportive but outcome-focused, "
+    "and firm when needed to drive completion. Never sound robotic, salesy, or overly formal. "
+    "Speak naturally, as a real advisor who wants the family to succeed."
+)
+
+STAGE_FOCUS_PROMPTS: dict[str, str] = {
+    "greeting": (
+        "Focus on greeting the family warmly, introduce yourself as Maya from NxtWave, confirm the learner's name, "
+        "and set clear expectations for the onboarding flow before discussing payment options. "
+        "Use natural Telugu with helpful English words when it keeps the family comfortable."
+    ),
+    "payment_options": (
+        "Share the three payment choices: Credit Card, Full Payment, and 0 percent Interest Loan with NBFC (EMI). "
+        "Present them in a crisp, reassuring manner. Encourage the family to pick the option that fits them best "
+        "and clarify that you will guide them through the next steps. Keep the tone confident yet friendly."
+    ),
+    "nbfc_selection": (
+        "Guide the family through selecting an NBFC partner for the EMI path. "
+        "Explain approval steps, timelines, and required documents so they feel prepared to continue immediately. "
+        "Reinforce trust and keep momentum toward completion."
+    ),
+    "kyc": (
+        "Walk the family through uploading PAN, address proof, and bank statements. "
+        "Check for understanding, resolve doubts, and reassure them that you are staying with them until every document is submitted correctly."
+    ),
+    "rca": (
+        "Summarize commitments, confirm the agreed timelines, and close the session with decisive next steps. "
+        "Make sure the family feels confident about what happens after this call."
+    ),
+}
 
 def initialize_rag_pipeline_globally():
     """
@@ -130,8 +167,8 @@ class NxtWaveOnboardingAgent(agents.Agent):
             if payload.get("action") == "force_reply":
                 print("Received force_reply from frontend. Re-engaging user.")
                 re_engagement_prompt = (
-                    f"In Tenglish, re-engage the user for the '{self.current_stage}' stage. "
-                    "Ask them a question to continue."
+                    f"{PRE_SYSTEM_PROMPT} You are reconnecting with the family during the '{self.current_stage}' stage. "
+                    "Ask a concise, warm Telugu question (mix in natural English words if helpful) that nudges them to continue."
                 )
                 if self.agent_session:
                     await self.agent_session.generate_reply(instructions=re_engagement_prompt)
@@ -197,7 +234,8 @@ class NxtWaveOnboardingAgent(agents.Agent):
         reply_session: AgentSession | None,
     ) -> None:
         if agent_message and reply_session:
-            await reply_session.generate_reply(instructions=f"Say: '{agent_message}' in Telugu.")
+            prompt_text = "Say: '{}' in Telugu.".format(agent_message)
+            await reply_session.generate_reply(instructions=prompt_text)
 
         if next_stage == "flow_complete":
             self.current_stage = "completed"
@@ -233,43 +271,29 @@ class NxtWaveOnboardingAgent(agents.Agent):
                 print(f"Failed to send stage advance: {e}")
 
     async def update_agent_for_stage(self):
-        stage_instructions = ""
-        if self.current_stage == "greeting":
-            stage_instructions = (
-                "Greet the family warmly, introduce yourself as Harshitha from NxtWave, "
-                "and confirm the learner's name before moving to payment options."
-            )
-        elif self.current_stage == "payment_options":
-            stage_instructions = (
-                "Present 3 payment options: 1. Credit Card, 2. Full Payment, 3. 0% Interest Loan with NBFC (EMI). "
-                "Ask user to choose one. Be brief and direct."
-            )
-        elif self.current_stage == "nbfc_selection":
-            stage_instructions = (
-                "The user chose the 0% EMI path. Help them pick an NBFC partner, explain the approval steps, "
-                "and mention the documents they need for instant processing."
-            )
-        elif self.current_stage == "kyc":
-            stage_instructions = (
-                "Guide the family through document submission. Confirm PAN, address proof, and bank statement uploads."
-            )
-        elif self.current_stage == "rca":
-            stage_instructions = (
-                "Summarize commitments, confirm timelines, and close the call with clear next steps."
-            )
-        elif self.current_stage in ["completed", "flow_complete"]:
+        if self.current_stage in ["completed", "flow_complete"]:
             return  # Conversation has ended
 
-        if self.agent_session and stage_instructions:
-            await self.agent_session.generate_reply(
-                instructions=f"Move to '{self.current_stage}' stage. In Telugu: {stage_instructions}"
-            )
+        stage_guidance = STAGE_FOCUS_PROMPTS.get(self.current_stage)
+        if not stage_guidance or not self.agent_session:
+            return
+
+        stage_title = self.current_stage.replace("_", " ")
+        stage_instructions = (
+            f"{PRE_SYSTEM_PROMPT} "
+            f"You are currently guiding the '{stage_title}' stage. "
+            f"{stage_guidance} Respond in Telugu with natural English phrases when they build comfort."
+        )
+
+        await self.agent_session.generate_reply(instructions=stage_instructions)
 
 async def entrypoint(ctx: JobContext):
     # Instructions are updated to make the agent aware of its RAG capabilities
     llm_instructions = (
-        f"You are {AGENT_SPOKEN_NAME} from {CALLING_FROM_COMPANY}. Telugu voice agent. "
-        f"Be brief, direct. Present payment options immediately. Handle user choice with validation logic."
+        f"{PRE_SYSTEM_PROMPT} "
+        f"Introduce yourself as {AGENT_SPOKEN_NAME} from {CALLING_FROM_COMPANY}. "
+        "Lead the onboarding conversation in Telugu with natural English phrases, keep momentum across each stage, "
+        "and confirm every required action is complete before ending the session."
     )
 
     session = agents.AgentSession(
@@ -298,7 +322,7 @@ async def entrypoint(ctx: JobContext):
     # Proactive greeting in Tenglish to engage immediately
     initial_greeting_prompt = (
         "Start immediately in Tenglish (a mix of modern Telugu and English). "
-        "Say: 'Namaste! Nenu me onboarding agent, Harshitha. I will guide you through the process until you get learning access.' "
+        "Say: 'Namaste! Nenu me onboarding agent, Maya. I will guide you through the process until you get learning access.' "
         "Be friendly and welcoming."
     )
     await session.generate_reply(instructions=initial_greeting_prompt)

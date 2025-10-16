@@ -175,7 +175,7 @@ const STAGE_FLOW: StageConfig[] = [
     {
         key: 'greeting',
         title: 'Greeting',
-        guidance: 'Harshitha will welcome you and confirm your learner details.',
+        guidance: 'Maya will welcome you and confirm your learner details.',
         microcopy: 'Most families complete this welcome in under 2 minutes.',
         ctaLabel: 'Proceed to payment options',
         accent: 'from-sky-300 to-indigo-400',
@@ -385,7 +385,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onStartCall }) => {
         </div>
     );
 };
-const agentDisplayName = 'Harshitha';
+const agentDisplayName = 'Maya';
 
 const CallPage: React.FC<CallPageProps> = ({ user, onReset }) => {
     const [room, setRoom] = useState<Room | null>(null);
